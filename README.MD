@@ -30,4 +30,4 @@ coming soon.
 
 celcoder@gmail.com
 
-[https://github.com/celcoder/github-link](https://github.com/celcoder/)
+[https://github.com/celcoder/kardfinancial](https://github.com/celcoder/)
