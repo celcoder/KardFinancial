@@ -1,10 +1,6 @@
 # Kard Financial Application Addons
 > Angular 1.5x Component based application.
 
-[![NPM Version][npm-image]][npm-url]
-[![Build Status][travis-image]][travis-url]
-[![Downloads Stats][npm-downloads]][npm-url]
-
 Each folder represents the code that was added on to the application.
 
 ## Installation
@@ -12,7 +8,7 @@ Each folder represents the code that was added on to the application.
 OS X & Linux:
 
 ```sh
-npm install my-crazy-module --save
+coming soon.
 ```
 
 ## Release History
@@ -32,6 +28,6 @@ npm install my-crazy-module --save
 
 ## Meta
 
-Celcoder@gmail.com
+celcoder@gmail.com
 
 [https://github.com/celcoder/github-link](https://github.com/celcoder/)
