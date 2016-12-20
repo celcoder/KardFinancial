@@ -16,6 +16,7 @@ coming soon.
 * 0.1.0
     * ADDED: Filereader Service
     * ADDED: E2E protractor test w selenium
+    * ADDED: Server Test w Mocha, Chai, Sinon
 * 0.0.1
     * Work in progress
 
