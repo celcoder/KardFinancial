@@ -1,8 +1,8 @@
 'use strict';
 
-var LocalStrategy = require('passport-local').Strategy;
+const LocalStrategy = require('passport-local').Strategy;
 
-var User = require('../app/models/user');
+const User = require('../app/models/user');
 
 module.exports = function(passport) {
 
@@ -46,7 +46,7 @@ module.exports = function(passport) {
 
             // if there is no user with that email
             // create the user
-            var newUser = new User();
+            const newUser = new User();
 
             // set the user's local credentials
             newUser.local.email = email;
