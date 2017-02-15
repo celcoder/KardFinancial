@@ -1,9 +1,9 @@
 'use strict';
 
-var mongoose = require('mongoose');
-var bcrypt = require('bcrypt-nodejs');
+import mongoose from 'mongoose';
+import bcrypt from 'bcrypt-nodejs';
 
- var userSchema = mongoose.Schema({
+const userSchema = mongoose.Schema({
   local    : {
     email    : String,
     password : String,
