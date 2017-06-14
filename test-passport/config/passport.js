@@ -78,7 +78,7 @@ module.exports = function(passport) {
       passwordField: 'password',
       passReqToCallback: true // allows us to pass back the entire request to the callback
     },
-    function(req, email, password, done) { // callback with email and password from our form
+    (req, email, password, done) => { // callback with email and password from our form
 
       // find a user whose email is the same as the forms email
       // we are checking to see if the user trying to login already exists
@@ -113,13 +113,14 @@ module.exports = function(passport) {
     },
 
     // facebook will send back the token and profile
-    function(req, token, refreshToken, profile, done) {
+    (req, token, refreshToken, profile, done) => {
 
       // asynchronous
       process.nextTick(function() {
 
         // check if the user is already logged in
         if (!req.user) {
+          console.log('loginFaceBook');
           // find the user in the database based on their facebook id
           User.findOne({ 'facebook.id': profile.id }, function(err, user) {
 
@@ -155,7 +156,7 @@ module.exports = function(passport) {
           });
 
         } else {
-          console.log('User Exists', req.user);
+          console.log('LoginFB');
           // user already exists and is logged in, we have to link accounts
           var user = req.user; // pull the user out of the session
 
