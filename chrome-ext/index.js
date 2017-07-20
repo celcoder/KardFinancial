@@ -1,57 +1,51 @@
 'use strict';
 
-import axios from 'axios';
 import urlPackage from 'url';
-import config from '../config.js';
-import { trackConfirmation, trackUser, trackInstall } from '../mixpanel.js'
+import CONFIG from '../config.js';
+import CONSTANTS from '../constants.js';
 
-const SERVER = config.server;
+import { trackConfirmation, trackUser, trackInstall } from '../mixpanel.js';
+import { getUser, fetchConfirmationList, fetchData } from './kardApi.js';
+import { emptyData, tabState, msgObj } from './defaultDataSet.js';
+import {
+  forceLogOut,
+  sendMsgToContentScript,
+  removeLocalStorageItems,
+  filterUniqueBank,
+  barclaysArrivalCard,
+  findBarclayArrival
+} from './util.js';
 
-const portals = ['cardlytics.com', 'barclaycardrewardsboost.com', 'discover.com', 'bonuscashcenter.citicards.com', 'bankofamerica.com', 'amexoffers.com', 'chase.com'];
+const SERVER = CONFIG.server;
 
 let activeTabId = 0;
 let browserTabTable = {};
 let newCards = [];
 let listForConfirmation = {};
+let loggedUser;
+let AFSRCFOUND;
 
-const initMx = () => {
-  const user = JSON.parse(localStorage.getItem('user'));
-  if (user) {
-    return trackUser(user);
-  }
-}
+const checkLoggedUser = () => (localStorage.getItem('token')) ? true : false;
 
-//fetches list of confirmation url
-const fetchConfirmationList = () => {
-  axios.get(`${SERVER}/kardOffers/getConfirmation`)
-    .then((res) => {
-      listForConfirmation = res.data;
-    })
-    .catch((err) => console.log(err))
-}
+const initMx = (user) => trackUser(user);
 
-const initScript = () => {
-  initMx();
-  fetchConfirmationList();
+const checkOldUsers = () => {
+  return forceLogOut();
 }();
 
-const handleError = (err) => console.info('Error => promiseApi error');
-
-const sendMsgToContentScript = (tabId, obj) => chrome.tabs.sendMessage(tabId, obj);
-
-const filterUniqueBank = (user) => (user) ? [...new Set(user.cards.map(card => card.bank))] : [];
-
-const barclaysArrivalCard = (card) => card.name === "Barclaycard Arrival Plus™ World Elite MasterCard®";
-
-const findBarclayArrival = (cardArray) => cardArray.some(barclaysArrivalCard);
-
-const emptyData = (tabId) => {
-  return {
-    kardOffers: { offers: [] },
-    syncedOffers: { offers: [] },
-    tabId: tabId || ""
+const initScript = () => {
+  if (checkLoggedUser()) {
+    return Promise.all([getUser(), fetchConfirmationList()])
+      .then(([user, confirmationList]) => {
+        loggedUser = user.data.user
+        listForConfirmation = confirmationList.data;
+        initMx(loggedUser);
+      })
+      .catch((err) => console.info(err));
   }
-}
+}();
+
+const handleError = (err) => console.info('Error => promiseApi error', err);
 
 const setDataNoOffers = (tabId) => {
   const data = emptyData(tabId);
@@ -80,6 +74,7 @@ const setTabData = (res) => {
   browserTabTable[tabId]['kardData'] = kardOffers;
   browserTabTable[tabId]['syncedData'] = syncedOffers;
   browserTabTable[tabId].notification = true;
+  browserTabTable[tabId].standDown = false;
   return res;
 }
 
@@ -87,7 +82,8 @@ const displayBrowserBadge = (data) => {
   const { kardOffers, syncedOffers, tabId } = data;
   let offerCount = kardOffers.offers.length + syncedOffers.offers.length;
   let displayNumber = (offerCount) ? offerCount.toString() : '';
-  chrome.browserAction.setBadgeText({ text: displayNumber, tabId: tabId});
+  browserTabTable[tabId].badgeText = displayNumber;
+  chrome.browserAction.setBadgeText({ text: displayNumber, tabId: tabId });
   return data;
 }
 
@@ -104,38 +100,32 @@ const updateClientSideData = (data) => {
 }
 
 const checkForBlockedUrl = (url) => {
-  const blocked = ['extensions', 'newtab', 'www.google.com', 'mail.google.com', 'calendar.google.com', 'www.twitter.com', 'www.facebook.com', 'www.messenger.com', 'inbox.google.com', 'www.reddit.com'];
+  const blockedUrl = CONSTANTS.BLOCKED_URL;
   const parsed = urlPackage.parse(url);
-  return (parsed && blocked.indexOf(parsed.hostname) > -1) ? true : false;
+  return (parsed && blockedUrl.indexOf(parsed.hostname) > -1) ? true : false;
 }
 
 const queryObj = (tabId, apiUrl, activeUrl, banks) => {
-  const user = JSON.parse(localStorage.getItem('user'));
-  let params = { domain: activeUrl, banks: banks, tabId: tabId };
+  const user = loggedUser;
+  let params = { domain: activeUrl, banks: banks, tabId: tabId, from: 'extension' };
   if (user && apiUrl === `/synced/getSyncedOffers`) {
     params.userId = user._id;
-    params.userEmail = user.email;
   }
   return params;
 }
 
 const dataApi = (tabId, apiUrl, activeUrl, banks) => {
   let paramsObj = queryObj(tabId, apiUrl, activeUrl, banks);
-  return axios({
-      method: 'get',
-      headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
-      url: `${SERVER}${apiUrl}`,
-      params: paramsObj
-    })
+  return fetchData(apiUrl, paramsObj);
 }
 
 const promiseApi = (promises) => {
   return Promise.all(promises)
-          .then(sortDataObj)
-          .then(setTabData)
-          .then(displayBrowserBadge)
-          .then(updateClientSideData)
-          .catch(handleError)
+    .then(sortDataObj)
+    .then(setTabData)
+    .then(displayBrowserBadge)
+    .then(updateClientSideData)
+    .catch(handleError)
 }
 
 //need to refactor this after piping out localStorage
@@ -143,8 +133,9 @@ const updateExtensionData = (tabId, activeUrl) => {
   if (checkForBlockedUrl(activeUrl)) {
     return setDataNoOffers(tabId);
   } else {
-    const apiUrl = localStorage.getItem('token') ? '/offers' : '/offers/count';
-    const user = JSON.parse(localStorage.getItem('user'));
+    // const apiUrl = localStorage.getItem('token') ? '/offers' : '/offers/count';
+    const apiUrl = '/offers';
+    const user = loggedUser;
     const cards = filterUniqueBank(user);
     const barclaysCard = cards.filter((card) => card === 'Barclays');
     const otherCards = cards.filter((card) => card !== 'Barclays');
@@ -155,71 +146,57 @@ const updateExtensionData = (tabId, activeUrl) => {
         let promises = urls.map((url) => dataApi(tabId, url, activeUrl, otherCards));
         return promiseApi(promises);
       }
-      let singlePromise = dataApi(tabId, syncedUrl, activeUrl, otherCards);
+      let singlePromise = dataApi(tabId, syncedUrl, activeUrl, barclaysCard);
       return promiseApi([singlePromise]);
-    } else {
+    }
+    if (user && !user.pilot) {
       let singlePromise = dataApi(tabId, apiUrl, activeUrl, cards);
       return promiseApi([singlePromise]);
     }
   }
 }
 
-const removeLocalStorageItems = (items) => {
-  const listOfItems = items;
-  return listOfItems.forEach((idx) => localStorage.removeItem(idx));
-}
-
-const showSucessNotification = (url) => {
+const showSuccessNotification = (url) => {
+  if (new URL(url).origin == `${SERVER}`) {
+    return false
+  }
   const kardSyncedID = 7997622;
-  let answer = url.match(/(kard)|(Kard)|(source=cj)|(CJ)|(ranSiteID)|(linkshare)|(7997622)/gi)
-  return (answer) ? true : false;
-}
-
-const tabState = () => {
-  return {
-    url: "",
-    syncedData: null,
-    kardData: null,
-    notification: null,
-    cards: []
-  }
-}
-
-const msgObj = (id) => {
-  return {
-    tabId: id,
-    updateContentScriptData: true,
-    updateNotification: true,
-    showNotification: null
-  }
+  let matched = url.match(/(kard)|(Kard)|(7997622)|(4689368)|(10737101)|(311675)|(42240)|(42444)|(Ui2CR3a3p74)|(42380)|(3Azz0M0aDzoxUkhT5txLQRkVz80)|(728963)|(10666803)|(10579)|(5311)|(46157)|(D17AFFIL)|(11131426)|(42328)/gi)
+    // let matched = url.match(/(synced.getShortLink.)/gi);
+  return (matched) ? true : false;
 }
 
 const checkConfirmationURLList = (tabs) => {
   const urlParsed = urlPackage.parse(tabs.url);
-  const user = JSON.parse(localStorage.getItem('user'));
-  if (listForConfirmation[urlParsed.host] == urlParsed.pathname || (urlParsed.pathname.match(/(confirmation|complete)$/mig)) || (urlParsed.pathname.match(/(COSummary-Submit)/mig))) {
-    return trackConfirmation(user.email, tabs.url);
+  const user = loggedUser;
+  if (listForConfirmation[urlParsed.host] == (urlParsed.pathname||urlParsed.path) || (urlParsed.pathname.match(/(confirmation)|(complete)$/mig)) || (urlParsed.pathname.match(/(COSummary-Submit)/mig))) {
+    return trackConfirmation(user.email, user._id, tabs.url);
+  } else {
+    return false;
   }
 }
 
-chrome.tabs.onCreated.addListener((tab) => {
-  const { id } = tab;
-  browserTabTable[id] = tabState();
-  return sendMsgToContentScript(id, { tabId: id });
-})
+const foundAfsrc = (url) => {
+  let answer = url.match(/(afsrc=1)|(www.apmebf.com)|(www.anrdoezrs.net)|(www.commission-junction.com)|(www.dpbolvw.net)|(www.jdoqocy.com)|(www.kqzyfj.com)|(www.qksrv.net)|(www.tkqlhce.com)|(www.qksz.net)|(www.emjcd.com)|(www.afcyhf.com)|(www.awltovhc.com)|(www.ftjcfx.com)|(www.lduhtrp.net)|(www.tqlkg.com)|(www.awxibrm.com)|(www.cualbr.com)|(www.rnsfpw.net)|(www.vofzpwh.com)|(www.yceml.net)|(www.cj.com)/gi)
+  if (answer == null) {
+    return false
+  } else {
+    AFSRCFOUND = true
+    return true;
+  }
+}
 
-chrome.tabs.onActivated.addListener((tab, changeInfo) => {
-  chrome.tabs.get(tab.tabId, (currentActiveTab) => {
-    const { tabId } = tab;
-    const activeUrl = currentActiveTab.url;
-    activeTabId = tabId;
-
-    if (!browserTabTable[tabId]) {
-      browserTabTable[tabId] = tabState();
-    }
-
+//new chrome version broke oncreated and onactivated function for starting up
+chrome.tabs.query({ currentWindow: true, active: true }, (tabs) => {
+  if(tabs[0].id){
+  const tabId = tabs[0].id;
+  activeTabId = tabId;
+  if (!browserTabTable[tabId]) {
+    browserTabTable[tabId] = tabState();
+    sendMsgToContentScript(tabId, { tabId: tabId });
     let newCardsList = newCards.sort().toString();
     let oldCardsList = browserTabTable[tabId].cards.sort().toString();
+
     if (newCardsList !== oldCardsList) {
       browserTabTable[tabId].cards = newCards;
       updateExtensionData(tabId, activeUrl);
@@ -230,7 +207,56 @@ chrome.tabs.onActivated.addListener((tab, changeInfo) => {
       msg.showNotification = (browserTabTable[tabId].notification) ? true : false;
       sendMsgToContentScript(tabId, msg);
     }
+  }
+}
+});
 
+chrome.tabs.onCreated.addListener((tab) => {
+  const { id } = tab;
+  activeTabId = id;
+  if (!browserTabTable[id]) {
+    browserTabTable[id] = tabState();
+    return sendMsgToContentScript(id, { tabId: id });
+  }
+})
+
+//begining of webrequest if AFSRC found and there is no GOTOLINK then standdown = true
+chrome.webRequest.onBeforeRedirect.addListener(function(details) {
+  let parsedURL = urlPackage.parse(details.redirectUrl);
+  if (foundAfsrc(parsedURL.host) && !browserTabTable[activeTabId].goingToLink) {
+    browserTabTable[activeTabId].standDown = true;
+  };
+}, {
+  urls: ["<all_urls>"]
+}, ["responseHeaders"]);
+// end of webrequest
+
+chrome.tabs.onActivated.addListener((tab, changeInfo) => {
+  chrome.tabs.get(tab.tabId, (currentActiveTab) => {
+    const { tabId } = tab;
+    const activeUrl = currentActiveTab.url;
+    activeTabId = tabId;
+
+    if (browserTabTable[tabId] && browserTabTable[tabId].standDown) {
+      return;
+    } else {
+      if (!browserTabTable[tabId]) {
+        browserTabTable[tabId] = tabState();
+      }
+
+      let newCardsList = newCards.sort().toString();
+      let oldCardsList = browserTabTable[tabId].cards.sort().toString();
+      if (newCardsList !== oldCardsList) {
+        browserTabTable[tabId].cards = newCards;
+        updateExtensionData(tabId, activeUrl);
+      }
+
+      if (browserTabTable[tabId]) {
+        let msg = msgObj(tabId);
+        msg.showNotification = (browserTabTable[tabId].notification) ? true : false;
+        sendMsgToContentScript(tabId, msg);
+      }
+    }
   })
 })
 
@@ -238,37 +264,63 @@ chrome.idle.onStateChanged.addListener(() => fetchConfirmationList());
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   const { url } = tab;
-  const hostname = new URL(url).hostname;
+  const hostname = new URL(url).origin;
+  const checkStoreName = hostname.split('.')[1];
+  // const hhh = hostname.replace('www.','').replace('.com', '');
+  let currentTabUrl = browserTabTable[tabId].url;
+
+  //if we see redirect or going to link = true, show offer
+  if (changeInfo.status == 'complete' && (AFSRCFOUND || browserTabTable[tabId].goingToLink)) {
+    AFSRCFOUND = false;
+    browserTabTable[tabId].goingToLink = false;
+    sendMsgToContentScript(tabId, { offeractivated: true })
+  }
+
+  if (browserTabTable[activeTabId].standDown) {
+      browserTabTable[tabId].standDown = false;
+      browserTabTable[tabId].url = hostname;
+      return;
+  }
 
   if (changeInfo.status === 'loading') {
+    chrome.browserAction.setBadgeText({ text: browserTabTable[tabId].badgeText, tabId: tabId });
     checkConfirmationURLList(tab);
   }
 
-  if (browserTabTable[tabId].url !== hostname && hostname !== "newtab" && changeInfo.status === 'complete') {
+  //webapp links that has URL id will show success notifications
+  if (currentTabUrl !== "newtab" && currentTabUrl !== hostname && currentTabUrl.indexOf(checkStoreName) < 0 && changeInfo.status === 'complete') {
     browserTabTable[tabId].url = hostname;
     sendMsgToContentScript(tabId, { tabId: tabId });
     updateExtensionData(tabId, url);
-    return (showSucessNotification(url)) ? sendMsgToContentScript(tabId, { offeractivated: true }) : "";
+    if (showSuccessNotification(url)) {
+      sendMsgToContentScript(tabId, { offeractivated: true })
+      browserTabTable[tabId].goingToLink = false;
+      AFSRCFOUND = false;
+    }
   }
 
   let msg = msgObj(tabId);
-  if (browserTabTable[tabId].url === hostname && changeInfo.status === 'complete') {
-    msg.showNotification = (browserTabTable[tabId].notification) ? true : false;
+  if (currentTabUrl === hostname && changeInfo.status === 'complete') {
+    msg.showNotification = (browserTabTable[tabId].notification && !browserTabTable[tabId].standDown) ? true : false;
+    chrome.browserAction.setBadgeText({ text: browserTabTable[tabId].badgeText, tabId: tabId });
     return sendMsgToContentScript(tabId, msg);
   }
 })
 
 //when tab is closed delete the property for proper garbage collection
-chrome.tabs.onRemoved.addListener((tabId) => {
-  return delete browserTabTable[tabId];
-})
+chrome.tabs.onRemoved.addListener((tabId) => delete browserTabTable[tabId]);
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   switch (request.command) {
+    case 'goingToLink': {
+      const { tabId, linkClicked } = request;
+      browserTabTable[tabId].goingToLink = linkClicked;
+      break;
+    }
     case 'loginFromWebApp': {
       const { user } = request;
       localStorage.setItem('token', user.token);
-      localStorage.setItem('user', JSON.stringify(user));
+      loggedUser = user;
       newCards = filterUniqueBank(user);
       break;
     }
@@ -287,7 +339,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       break;
     }
     case 'getUser': {
-      sendResponse({ user: JSON.parse(localStorage.getItem('user')) });
+      sendResponse({ user: loggedUser });
       break;
     }
     case 'transition': {
@@ -301,8 +353,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       break;
     }
     case 'setNotification': {
-      const { tabId, showNotification } = request;
-      browserTabTable[tabId].notification = showNotification;
+      const { tabId, closeNotification } = request;
+      browserTabTable[tabId].notification = closeNotification;
       break;
     }
   }
@@ -312,6 +364,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 chrome.browserAction.onClicked.addListener((tab) => sendMsgToContentScript(tab.id, { render: true }));
 
 chrome.runtime.onInstalled.addListener((details) => {
+    trackInstall();
   chrome.windows.getCurrent({ populate: true }, (winObj) => {
     let active = '';
     let currentUrl;
@@ -328,7 +381,6 @@ chrome.runtime.onInstalled.addListener((details) => {
     } else if (details.reason === 'install' && currentUrl.indexOf('webstore') > -1) {
       chrome.tabs.create({ url: `${SERVER}/signup` });
     }
-    trackInstall();
   });
 });
 
